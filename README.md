@@ -2,7 +2,7 @@
 
 > Production-oriented monitoring, risk controls, state health, and operational tooling for automated Polymarket trading systems.
 
-**Status:** Early development "under private"
+**Status:** Early development **under private**
 
 A trading bot does more than place orders.
 

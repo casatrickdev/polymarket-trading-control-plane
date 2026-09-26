@@ -1,104 +1,172 @@
-# Polymarket Trading Control Plane
+# Polymarket Trading Control Plane - Monitoring, Risk & Recovery
 
-> Production-oriented monitoring, risk controls, state health, and operational tooling for automated Polymarket trading systems.
+**Production-oriented monitoring, state reconciliation, risk controls, health checks, and operational tooling for automated Polymarket trading bots and trading systems.**
 
-**Status:** Early development **under private**
+A Polymarket trading bot does more than place orders.
 
-A trading bot does more than place orders.
+Once a bot starts managing real positions, the difficult questions become:
 
-Once a system is running with real positions, the important questions become:
-
-* Are my orders actually in the state I think they are?
-* Are my positions correct?
+* Is the order state correct?
+* What actually filled?
+* Are the positions accurate?
 * Is market data still fresh?
 * Did an execution fail or partially fill?
-* Is the system still connected?
-* Am I within my risk limits?
-* Should the bot keep trading right now?
+* Is the WebSocket connection healthy?
+* Is the account within risk limits?
+* Can the system safely continue trading?
 
-**Polymarket Trading Control Plane** is a small infrastructure layer designed to answer those questions.
+**Polymarket Trading Control Plane** is an infrastructure layer designed to answer those questions.
 
-The goal is not to build another trading strategy.
+> **The strategy decides what to trade.
+> The control plane decides whether the system is safe enough to keep trading.**
 
-The goal is to build the **operational layer around a trading strategy**.
+**Status:** Early development
 
 ---
 
-## Why this exists
+## What is a Polymarket Trading Control Plane?
+
+A **Polymarket trading control plane** sits around an automated trading bot and provides the operational layer for:
+
+* trading-state monitoring
+* order and fill tracking
+* position monitoring
+* exposure tracking
+* risk management
+* market-data health
+* WebSocket health
+* state reconciliation
+* failure detection
+* recovery
+* alerts
+* pause / resume controls
+* kill-switch behavior
+
+The project is intentionally **not another trading strategy**.
+
+It focuses on the infrastructure around the strategy.
+
+```text
+Polymarket
+     ↓
+Market Data / Order Events
+     ↓
+Event Processing
+     ↓
+State
+     ↓
+Risk
+     ↓
+Execution
+     ↓
+Reconciliation
+     ↓
+Monitoring
+     ↓
+Recovery
+```
+
+---
+
+# Why a Polymarket Trading Bot Needs a Control Plane
 
 A simple trading bot often looks like:
 
 ```text
 Market Data
-    ↓
-Strategy
-    ↓
-  Order
+     ↓
+ Strategy
+     ↓
+   Order
 ```
 
-A production trading system is closer to:
+That model works for a prototype.
+
+An automated trading system operating continuously is closer to:
 
 ```text
 Market Data
-    ↓
+     ↓
 Event Processing
-    ↓
-  State
-    ↓
-Strategy
-    ↓
-  Risk
-    ↓
-Execution
-    ↓
-Monitoring
-    ↓
-Recovery
+     ↓
+   State
+     ↓
+  Strategy
+     ↓
+    Risk
+     ↓
+  Execution
+     ↓
+ Monitoring
+     ↓
+  Recovery
 ```
 
-The difficult failures are often silent.
+The difference is the operational state around the strategy.
+
+A bot can remain online while its internal view of the market or account has become incorrect.
 
 For example:
 
 ```text
 WebSocket disconnect
         ↓
-Missed execution event
+Execution event missed
         ↓
 Local state becomes stale
         ↓
-Position is incorrect
+Position becomes incorrect
         ↓
-Strategy keeps trading
+Risk calculation becomes incorrect
+        ↓
+Strategy continues trading
 ```
 
-A system can remain online while its view of the market is wrong.
+The process is still running.
 
-This project is designed to make those conditions visible and controllable.
+The problem is that the **state is no longer trustworthy**.
+
+The control plane is designed to make these conditions visible and controllable.
 
 ---
 
-## Core goals
+# Core Problems
 
-The control plane focuses on five areas:
+The project focuses on five operational areas.
 
-### 1. System health
+## 1. Trading Bot Monitoring
 
-Know whether the trading system is operating normally.
+A trading system should expose its current operational state.
 
-Track:
+The control plane tracks health signals such as:
 
 * WebSocket connection
 * market-data freshness
-* order stream freshness
+* order-stream freshness
 * event-processing latency
 * API availability
 * last successful reconciliation
 * process heartbeat
 
-### 2. Trading state
+Example:
 
-Maintain an observable view of:
+```text
+SYSTEM: DEGRADED
+
+Market data:          OK
+Order stream:         OK
+API connectivity:     OK
+Position state:       MISMATCH
+Last reconciliation:  42s ago
+Risk engine:          WARNING
+Trading:              PAUSED
+```
+
+---
+
+## 2. Trading State
+
+The control plane maintains an observable state model for:
 
 * open orders
 * executed trades
@@ -108,45 +176,178 @@ Maintain an observable view of:
 * realized PnL
 * unrealized PnL
 * recent execution activity
+* system health
 
-### 3. Risk controls
+The important distinction is that these are separate concepts.
 
-Provide explicit limits around:
+```text
+Orders
+   ↓
+Trades / Fills
+   ↓
+Positions
+   ↓
+Exposure
+   ↓
+  Risk
+```
 
-* maximum position
-* maximum market exposure
-* maximum total exposure
-* daily loss
-* order size
-* execution failure count
-* stale-data conditions
+An order is what the strategy requested.
 
-### 4. Recovery
+A fill is what actually executed.
 
-Detect conditions such as:
+A position is what the account currently holds.
 
-* WebSocket disconnect
+Exposure is the risk created by those positions.
+
+These should not be treated as one object.
+
+---
+
+# 3. Polymarket Position Reconciliation
+
+Real-time trading events are useful for low-latency state updates.
+
+They should not be the only source of truth for recovery.
+
+A trading system can miss events because of:
+
+* WebSocket disconnects
+* application restarts
+* event gaps
+* delayed events
+* unexpected API responses
+* infrastructure failures
+
+When this happens, the control plane should compare local state against the current remote state.
+
+```text
+Local State
+     │
+     ├── Orders
+     │
+     └── Positions
+             │
+             ▼
+       Remote State
+             │
+             ▼
+      Compare / Repair
+             │
+             ▼
+        Verified State
+```
+
+Example:
+
+```text
+POSITION MISMATCH
+
+Market: BTC Up/Down
+
+Local:
++100
+
+Remote:
++40
+
+Difference:
+-60
+
+Status:
+REQUIRES_RECONCILIATION
+```
+
+The system should not automatically resume trading simply because a network connection has returned.
+
+It should:
+
+```text
+Reconnect
+   ↓
+Reconcile
+   ↓
+ Verify
+   ↓
+Check Risk
+   ↓
+Resume Trading
+```
+
+---
+
+# 4. Risk Management
+
+The first version keeps risk controls intentionally simple and explicit.
+
+Example configuration:
+
+```yaml
+max_position_size: 500
+max_market_exposure: 1000
+max_total_exposure: 5000
+max_daily_loss: 250
+max_consecutive_failures: 5
+max_market_data_age_ms: 5000
+```
+
+Decision flow:
+
+```text
+Risk Check
+    │
+    ├── Position limit exceeded? ──→ PAUSE
+    ├── Daily loss exceeded? ──────→ KILL
+    ├── Data too old? ──────────────→ PAUSE
+    ├── State mismatch? ───────────→ PAUSE
+    └── Everything OK ──────────────→ ALLOW
+```
+
+The risk layer should be independent of the strategy.
+
+That allows the same controls to protect multiple trading strategies.
+
+---
+
+# 5. Recovery
+
+Recovery is treated as part of the trading system rather than a networking feature.
+
+The control plane is designed to detect:
+
+* WebSocket disconnects
 * missed events
 * stale state
 * failed orders
 * partial fills
-* inconsistent position state
+* position inconsistencies
 * API degradation
 
-Then transition the system into a controlled state.
-
-### 5. Operational control
-
-Provide actions such as:
+A healthy recovery path looks like:
 
 ```text
-PAUSE TRADING
-RESUME TRADING
-KILL SWITCH
-RECONCILE STATE
+WebSocket disconnect
+        ↓
+Health = DEGRADED
+        ↓
+Trading = PAUSED
+        ↓
+Reconnect
+        ↓
+Reconcile
+        ↓
+Verify orders
+        ↓
+Verify positions
+        ↓
+Verify risk
+        ↓
+Trading = RESUMED
 ```
 
-The control plane should make it possible to stop trading **before an infrastructure problem becomes a trading problem**.
+The key principle is:
+
+> **Do not resume trading just because the connection came back.**
 
 ---
 
@@ -154,78 +355,114 @@ The control plane should make it possible to stop trading **before an infrastruc
 
 ```text
                          POLYMARKET
+                              │
+               ┌──────────────┴──────────────┐
+               │                             │
+         WebSocket Streams              API / Reads
+               │                             │
+               ▼                             ▼
+       ┌────────────────┐          ┌──────────────────┐
+       │ Event Ingestion│          │ State Reconciler │
+       └───────┬────────┘          └────────┬─────────┘
+               │                            │
+               └────────────┬───────────────┘
+                            ▼
+                    ┌──────────────────┐
+                    │    State Store   │
+                    │                  │
+                    │ Orders           │
+                    │ Trades           │
+                    │ Positions        │
+                    │ Exposure         │
+                    │ PnL              │
+                    │ Health           │
+                    └────────┬─────────┘
                              │
-              ┌──────────────┴──────────────┐
-              │                             │
-        WebSocket Streams              API / Reads
-              │                             │
-              ▼                             ▼
-      ┌────────────────┐          ┌──────────────────┐
-      │ Event Ingestion│          │ State Reconciler │
-      └───────┬────────┘          └────────┬─────────┘
-              │                            │
-              └────────────┬───────────────┘
-                           ▼
-                  ┌──────────────────┐
-                  │ State Store      │
-                  │                  │
-                  │ Orders           │
-                  │ Trades           │
-                  │ Positions        │
-                  │ Exposure         │
-                  │ PnL              │
-                  │ Health           │
-                  └────────┬─────────┘
-                           │
-            ┌──────────────┼──────────────┐
-            ▼              ▼              ▼
-       Risk Engine    Health Engine   Alert Engine
-            │              │              │
-            └──────────────┼──────────────┘
-                           ▼
-                  ┌──────────────────┐
-                  │ Control Plane    │
-                  │                  │
-                  │ Pause            │
-                  │ Resume           │
-                  │ Kill Switch      │
-                  │ Reconcile        │
-                  └──────────────────┘
+              ┌──────────────┼──────────────┐
+              ▼              ▼              ▼
+         Risk Engine    Health Engine   Alert Engine
+              │              │              │
+              └──────────────┼──────────────┘
+                             ▼
+                    ┌──────────────────┐
+                    │  Control Plane   │
+                    │                  │
+                    │ Pause            │
+                    │ Resume           │
+                    │ Kill Switch      │
+                    │ Reconcile        │
+                    └──────────────────┘
 ```
+
+The control plane sits around the trading system rather than replacing the exchange or CLOB itself.
 
 ---
 
-# Polymarket integration
+# Polymarket Integration
 
-The project is designed around Polymarket's current trading/data architecture.
-
-Polymarket provides public market WebSocket streams and an authenticated user channel for order and trade events. Its current Rust client also exposes orderbook, price, order, and trade subscriptions, alongside Data and Gamma API clients.
-
-The control plane uses those interfaces as inputs, while maintaining its own normalized operational state.
+The system is designed around Polymarket market-data and trading interfaces.
 
 Conceptually:
 
 ```text
 Polymarket
-    ↓
+     ↓
 Raw Events
-    ↓
+     ↓
 Normalized Events
-    ↓
+     ↓
 State Store
-    ↓
+     ↓
 Health / Risk / Control
 ```
 
-The project does **not** attempt to replace the Polymarket CLOB.
-
-It sits around the trading system that consumes it.
+The control plane maintains a normalized operational view so that the rest of the system does not have to reason directly about every raw event independently.
 
 ---
 
-# State model
+# Health Model
 
-The system keeps separate concepts for:
+Every important subsystem should expose an explicit health state.
+
+Possible states:
+
+```text
+HEALTHY
+DEGRADED
+PAUSED
+RECOVERING
+FAILED
+```
+
+Example:
+
+```text
+SYSTEM: DEGRADED
+
+Market data:         OK
+Order stream:        OK
+API connectivity:    OK
+Position state:      MISMATCH
+Last reconciliation: 42s ago
+Risk engine:         WARNING
+Trading:             PAUSED
+```
+
+This gives the operator a clear distinction between:
+
+> **The process is alive**
+
+and:
+
+> **The trading system is safe to operate**
+
+Those are not the same condition.
+
+---
+
+# State Model
+
+The system separates:
 
 ```text
 Orders
@@ -239,162 +476,84 @@ Exposure
 Risk
 ```
 
-This distinction matters.
+### Orders
 
-An order is what the strategy requested.
+What the strategy requested.
 
-A fill is what actually executed.
+### Trades / Fills
 
-A position is what the account currently holds.
+What actually executed.
 
-Exposure is the risk resulting from those positions.
+### Positions
 
-These should not be derived from a single `order` object.
+What the account currently holds.
 
----
+### Exposure
 
-# Health model
+The risk associated with those positions.
 
-Every subsystem should expose an explicit health state.
+### Risk
 
-Example:
+Whether the current state allows the system to continue trading.
 
-```text
-SYSTEM: DEGRADED
-
-Market data:        OK
-Order stream:       OK
-API connectivity:   OK
-Position state:     MISMATCH
-Last reconciliation: 42s ago
-Risk engine:        WARNING
-Trading:            PAUSED
-```
-
-Possible states:
-
-```text
-HEALTHY
-DEGRADED
-PAUSED
-RECOVERING
-FAILED
-```
+This separation makes state transitions easier to inspect, test, reconcile, and recover.
 
 ---
 
-# Reconciliation
+# Risk State Machine
 
-Real-time events are useful for low-latency state updates.
-
-They should not be treated as the only mechanism for recovering state.
-
-After conditions such as:
-
-* WebSocket reconnect
-* application restart
-* suspected event gap
-* unexpected API response
-* state mismatch
-
-the control plane should compare local state against current remote state.
+A simplified risk decision model:
 
 ```text
-Local State
-     │
-     ├──────────────┐
-     │              │
-     ▼              ▼
-  Orders         Positions
-     │              │
-     └──────┬───────┘
-            │
-            ▼
-     Remote State
-            │
-            ▼
-      Compare / Repair
-            │
-            ▼
-      Verified State
+                    ┌───────────────┐
+                    │     ALLOW     │
+                    └───────┬───────┘
+                            │
+                   Risk condition detected
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │     PAUSE     │
+                    └───────┬───────┘
+                            │
+                     Critical condition
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │      KILL     │
+                    └───────────────┘
 ```
 
-A simplified discrepancy report might look like:
+Potential triggers include:
 
-```text
-POSITION MISMATCH
-
-Market: BTC Up/Down
-
-Local:
-  +100
-
-Remote:
-  +40
-
-Difference:
-  -60
-
-Status:
-  REQUIRES_RECONCILIATION
-```
-
-The strategy should not automatically continue trading simply because the network connection has returned.
+* excessive exposure
+* daily loss limit
+* stale market data
+* repeated execution failures
+* persistent state mismatch
+* severe system-health degradation
 
 ---
 
-# Risk controls
+# Kill Switch
 
-The first version intentionally keeps risk controls simple.
-
-Example:
-
-```yaml
-max_position_size: 500
-max_market_exposure: 1000
-max_total_exposure: 5000
-max_daily_loss: 250
-max_consecutive_failures: 5
-max_market_data_age_ms: 5000
-```
-
-Example decision flow:
-
-```text
-Risk Check
-    │
-    ├── Position limit exceeded? ──→ PAUSE
-    ├── Daily loss exceeded? ──────→ KILL
-    ├── Data too old? ─────────────→ PAUSE
-    ├── State mismatch? ───────────→ PAUSE
-    └── Everything OK ──────────────→ ALLOW
-```
-
-The risk layer should be independent of the strategy.
-
-That allows the same controls to protect different trading strategies.
-
----
-
-# Kill switch
-
-A kill switch is intentionally simple.
+The kill switch is intentionally simple.
 
 ```text
                     KILL SWITCH
                          │
-          ┌──────────────┴──────────────┐
-          │                             │
-     Stop new orders              Optional exit logic
-          │
-          ▼
+           ┌─────────────┴─────────────┐
+           │                           │
+      Stop new orders            Optional exit logic
+           │
+           ▼
       Freeze strategy
-          │
-          ▼
+           │
+           ▼
       Alert operator
 ```
 
-Possible triggers:
+Potential triggers:
 
 * manual operator action
 * daily loss threshold
@@ -402,15 +561,17 @@ Possible triggers:
 * persistent state mismatch
 * repeated execution failures
 * severe market-data staleness
-* system health failure
+* system-health failure
 
-The exact response should be configurable.
+The exact response should remain configurable.
 
 ---
 
 # Alerts
 
-The control plane should produce machine-readable events for:
+The control plane should produce machine-readable operational events.
+
+Examples:
 
 ```text
 STATE_MISMATCH
@@ -425,7 +586,7 @@ TRADING_PAUSED
 KILL_SWITCH_TRIGGERED
 ```
 
-Example:
+Example event:
 
 ```json
 {
@@ -438,14 +599,74 @@ Example:
 }
 ```
 
-This makes the same event usable by:
+The same event model can eventually feed:
 
 * CLI
 * dashboard
-* logs
-* Telegram/Discord alerts
+* structured logs
+* Telegram / Discord notifications
 * webhooks
-* future agent integrations
+* external monitoring
+* agent integrations
+
+---
+
+# Why State Reconciliation Matters
+
+One of the central problems in automated trading is that **local state can diverge from actual account state**.
+
+For example:
+
+```text
+Local position: 100
+Remote position: 40
+Difference:      -60
+```
+
+A strategy making decisions from the local value is now operating with incorrect information.
+
+The control plane therefore treats reconciliation as a first-class system operation.
+
+Reconciliation should be available after:
+
+* WebSocket reconnect
+* process restart
+* suspected event gaps
+* unexpected API responses
+* detected state mismatch
+
+The objective is:
+
+```text
+Unknown State
+     ↓
+Compare
+     ↓
+Repair
+     ↓
+Verified State
+```
+
+---
+
+# Failure Scenarios
+
+The project should eventually test failure cases such as:
+
+| Scenario                | Expected Behavior            |
+| ----------------------- | ---------------------------- |
+| WebSocket disconnect    | Mark degraded, reconnect     |
+| Missed event            | Detect and reconcile         |
+| Duplicate event         | Ignore safely                |
+| Partial fill            | Update execution state       |
+| Unknown order state     | Reconcile                    |
+| Stale market data       | Pause affected trading       |
+| API failure             | Enter degraded state         |
+| Process restart         | Reload and reconcile         |
+| Risk limit breach       | Pause or kill                |
+| Reconciliation mismatch | Block trading until resolved |
+
+Failure handling should be part of normal system design rather than an afterthought.
 
 ---
 
@@ -462,7 +683,7 @@ SQLite / PostgreSQL
 Structured logging
 ```
 
-Potential components:
+Potential internal components:
 
 ```text
 crates/
@@ -476,13 +697,13 @@ crates/
 └── control
 ```
 
-The first release should stay small.
+The initial implementation intentionally stays small.
 
-Avoid introducing distributed infrastructure before it is actually required.
+Distributed infrastructure should only be introduced when the system actually requires it.
 
 ---
 
-# Project structure
+# Project Structure
 
 ```text
 polymarket-trading-control-plane/
@@ -521,15 +742,71 @@ polymarket-trading-control-plane/
 
 ---
 
-# Development roadmap
+# Example Workflows
 
-## Phase 1 - State monitoring
+## Healthy trading flow
+
+```text
+Market data
+    ↓
+Event received
+    ↓
+State updated
+    ↓
+Risk check
+    ↓
+Strategy allowed
+    ↓
+Execution
+```
+
+## WebSocket failure
+
+```text
+WebSocket disconnect
+    ↓
+Health = DEGRADED
+    ↓
+Trading = PAUSED
+    ↓
+Reconnect
+    ↓
+Reconcile
+    ↓
+Verify orders
+    ↓
+Verify positions
+    ↓
+Verify risk
+    ↓
+Trading = RESUMED
+```
+
+## Critical risk event
+
+```text
+Daily loss limit exceeded
+    ↓
+Risk = CRITICAL
+    ↓
+Trading = PAUSED
+    ↓
+Protect / exit according to policy
+    ↓
+Alert operator
+```
+
+---
+
+# Development Roadmap
+
+## Phase 1 - State Monitoring
 
 * [x] Project architecture
 * [ ] WebSocket connection
 * [ ] Event ingestion
 * [ ] Order state
-* [ ] Trade/fill state
+* [ ] Trade / fill state
 * [ ] Position state
 * [ ] Health state
 
@@ -551,7 +828,7 @@ polymarket-trading-control-plane/
 * [ ] Execution failure limits
 * [ ] Risk state machine
 
-## Phase 4 - Operational controls
+## Phase 4 - Operational Controls
 
 * [ ] Pause
 * [ ] Resume
@@ -574,149 +851,58 @@ polymarket-trading-control-plane/
 * [ ] Execution adapter
 * [ ] Webhook API
 * [ ] External dashboard
-* [ ] Agent/MCP integration
+* [ ] Agent / MCP integration
 
 ---
 
-# Example workflow
+# Engineering Principles
 
-A healthy system:
+## Correctness before convenience
 
-```text
-Market data
-    ↓
-Event received
-    ↓
-State updated
-    ↓
-Risk check
-    ↓
-Strategy allowed
-    ↓
-Execution
-```
+Trading state should be explicit and auditable.
 
-A failed connection:
+## Fail closed
 
-```text
-WebSocket disconnect
-    ↓
-Health = DEGRADED
-    ↓
-Trading = PAUSED
-    ↓
-Reconnect
-    ↓
-Reconcile
-    ↓
-Verify orders
-    ↓
-Verify positions
-    ↓
-Verify risk
-    ↓
-Trading = RESUMED
-```
+When critical state cannot be trusted, the system should reduce or stop new risk.
 
-A critical risk event:
+## Events are inputs, not assumptions
 
-```text
-Daily loss limit exceeded
-    ↓
-Risk = CRITICAL
-    ↓
-Trading = PAUSED
-    ↓
-Cancel / protect according to policy
-    ↓
-Alert operator
-```
+Events can be delayed, duplicated, missed, or disconnected.
+
+The system must be able to recover.
+
+## Strategy-independent infrastructure
+
+Risk, health, reconciliation, and operational controls should not depend on one particular trading strategy.
+
+## Replayability
+
+Important state transitions should eventually be replayable for debugging and testing.
+
+## Small first
+
+The first version should solve the operational problem clearly before becoming a complete trading platform.
 
 ---
 
-# Failure scenarios
-
-The project should eventually test at least:
-
-| Scenario                | Expected behavior            |
-| ----------------------- | ---------------------------- |
-| WebSocket disconnect    | Mark degraded, reconnect     |
-| Missed event            | Detect and reconcile         |
-| Duplicate event         | Ignore safely                |
-| Partial fill            | Update execution state       |
-| Unknown order state     | Reconcile                    |
-| Stale market data       | Pause affected trading       |
-| API failure             | Enter degraded state         |
-| Process restart         | Reload and reconcile         |
-| Risk limit breach       | Pause or kill                |
-| Reconciliation mismatch | Block trading until resolved |
-
----
-
-# What this project is not
+# What This Project Is Not
 
 This project is **not**:
 
 * a guaranteed-profit trading bot
 * a trading strategy
-* financial advice
-* a copy-trading service
 * a prediction model
+* a copy-trading service
+* financial advice
 * an investment product
 
 It is infrastructure for building and operating automated trading systems.
 
 ---
 
-# Why this matters
+# Intended Users
 
-A strategy answers:
-
-> **What should I trade?**
-
-An execution engine answers:
-
-> **How should I place the order?**
-
-A control plane answers:
-
-> **Can I trust the system enough to keep trading?**
-
-That last question becomes increasingly important as trading systems become more automated.
-
----
-
-# Design principles
-
-### Correctness before convenience
-
-Trading state should be explicit and auditable.
-
-### Fail closed
-
-When critical state cannot be trusted, the default should be to reduce or stop new risk.
-
-### Events are inputs, not assumptions
-
-The system should be able to recover when events are delayed, duplicated, or missed.
-
-### Strategy-independent infrastructure
-
-Risk, health and reconciliation should work independently of a particular strategy.
-
-### Replayability
-
-Important state transitions should eventually be replayable for debugging and testing.
-
-### Small first
-
-The first version should solve one operational problem well rather than become a complete trading platform.
-
----
-
-# Intended users
-
-This project is useful for developers building:
+This project is designed for developers building:
 
 * Polymarket trading bots
 * automated trading systems
@@ -726,44 +912,112 @@ This project is useful for developers building:
 * quantitative trading infrastructure
 * research-to-production trading pipelines
 
-It can also serve as a foundation for custom trading infrastructure where execution reliability and operational controls matter.
+It is particularly relevant when a trading system needs explicit:
+
+**state + risk + monitoring + reconciliation + recovery**
+
+rather than only strategy logic.
 
 ---
 
-# Long-term direction
+# Relationship to a Polymarket Trading Bot
 
-The control plane can eventually become the operational layer between a strategy and an execution engine:
+A useful way to think about the architecture is:
 
 ```text
-            STRATEGY
-                │
-                ▼
-        ┌───────────────┐
-        │ CONTROL PLANE │
-        │               │
-        │ State         │
-        │ Risk          │
-        │ Health        │
-        │ Reconciliation│
-        │ Alerts        │
-        │ Recovery      │
-        └───────┬───────┘
-                │
-                ▼
-          EXECUTION ENGINE
-                │
-                ▼
-            POLYMARKET
+              POLYMARKET TRADING BOT
+                       │
+             ┌─────────┴─────────┐
+             │                   │
+          Strategy            Execution
+             │                   │
+             └─────────┬─────────┘
+                       ↓
+              ┌─────────────────┐
+              │  CONTROL PLANE  │
+              │                 │
+              │ State           │
+              │ Risk            │
+              │ Health          │
+              │ Reconciliation  │
+              │ Alerts          │
+              │ Recovery        │
+              └────────┬────────┘
+                       ↓
+                 Operational
+                    Control
 ```
 
-Future extensions could include:
+The control plane is the layer responsible for answering:
+
+> **Can the trading system safely continue operating?**
+
+---
+
+# Related Casatrick Projects
+
+### Polymarket Trading Bot
+
+The main automated trading system:
+
+https://github.com/casatrickdev/polymarket-trading-bot
+
+### Polymarket Execution Verifier
+
+Execution verification across order, fill, transaction, and settlement states:
+
+https://github.com/casatrickdev/polymarket-execution-verifier
+
+The projects are designed to explore different layers of automated Polymarket trading infrastructure.
+
+```text
+Polymarket Trading Bot
+        ↓
+Strategy + Execution
+        ↓
+Execution Verifier
+        ↓
+Trading Control Plane
+        ↓
+State + Risk + Monitoring + Recovery
+```
+
+---
+
+# Long-Term Direction
+
+The long-term architecture is a control layer between strategy logic and execution infrastructure.
+
+```text
+             STRATEGY
+                 │
+                 ▼
+        ┌───────────────────┐
+        │   CONTROL PLANE   │
+        │                   │
+        │ State             │
+        │ Risk              │
+        │ Health            │
+        │ Reconciliation    │
+        │ Alerts            │
+        │ Recovery          │
+        └─────────┬─────────┘
+                  │
+                  ▼
+          EXECUTION ENGINE
+                  │
+                  ▼
+             POLYMARKET
+```
+
+Potential future extensions include:
 
 * historical replay
 * strategy simulation
 * execution analytics
 * incident replay
-* distributed workers
 * portfolio-level controls
+* distributed workers
 * external dashboards
 * APIs
 * agent integrations
@@ -774,7 +1028,11 @@ Future extensions could include:
 
 **Early development.**
 
-The initial objective is to establish a reliable state, health, reconciliation, and risk foundation before adding sophisticated strategy or execution logic.
+The initial goal is to establish a reliable foundation for:
+
+**state → health → reconciliation → risk → operational control**
+
+before adding more sophisticated execution or strategy functionality.
 
 ---
 
@@ -796,14 +1054,38 @@ Areas of particular interest:
 
 # Keywords
 
-`Polymarket` · `Polymarket API` · `Polymarket CLOB` · `Polymarket WebSocket` · `Polymarket trading bot` · `Polymarket trading system` · `Polymarket execution` · `Polymarket risk management` · `Polymarket monitoring` · `Polymarket reconciliation` · `algorithmic trading` · `trading infrastructure` · `Rust trading bot` · `automated trading` · `real-time trading systems`
+`Polymarket`
+`Polymarket trading bot`
+`Polymarket bot monitoring`
+`Polymarket API`
+`Polymarket CLOB`
+`Polymarket WebSocket`
+`Polymarket trading system`
+`Polymarket execution`
+`Polymarket risk management`
+`Polymarket position reconciliation`
+`Polymarket monitoring`
+`Polymarket recovery`
+`automated trading`
+`algorithmic trading`
+`trading infrastructure`
+`Rust trading bot`
+`real-time trading systems`
 
 ---
 
-## About Casatrick
+# About Casatrick
 
-Casatrick builds trading, data, and automation systems for Polymarket, with a focus on real-time infrastructure, execution, reliability, risk, and production engineering.
+Casatrick builds trading, data, and automation systems for Polymarket, with a focus on:
+
+* real-time infrastructure
+* execution
+* state management
+* reliability
+* risk
+* monitoring
+* production engineering
 
 The goal of this project is to explore the infrastructure required to operate automated Polymarket trading systems reliably.
 
-If you need help or code contact me at [Telegram](https://t.me/casatrick)
+For questions or development discussions, contact [Casatrick on Telegram](https://t.me/casatrick).

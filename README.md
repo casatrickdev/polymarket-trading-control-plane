@@ -4,6 +4,8 @@
 
 A Polymarket trading bot does more than place orders.
 
+by [Casatrick on Telegram](https://t.me/casatrick).
+
 Once a bot starts managing real positions, the difficult questions become:
 
 * Is the order state correct?

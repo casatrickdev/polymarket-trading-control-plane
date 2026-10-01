@@ -1,0 +1,34 @@
+[package]
+name = "polymarket-trading-control-plane"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+description = "Operational control plane for Polymarket trading systems: health, risk, reconciliation, and recovery."
+repository = "https://github.com/casatrickdev/polymarket-trading-control-plane"
+readme = "README.md"
+keywords = ["polymarket", "trading", "risk", "reconciliation"]
+categories = ["finance"]
+
+[features]
+default = []
+# Compiles the read-only adapter against polymarket_client_sdk_v2.
+# No order placement and no private-key handling.
+polymarket = ["dep:polymarket_client_sdk_v2"]
+
+[dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+polymarket_client_sdk_v2 = { version = "0.7.0", optional = true, default-features = false, features = ["clob", "ws", "data"] }
+
+[dev-dependencies]
+tempfile = "3"
+rust_decimal = { version = "1", features = ["serde-with-str"] }
